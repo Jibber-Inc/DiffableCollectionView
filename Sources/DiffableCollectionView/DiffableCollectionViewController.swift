@@ -8,83 +8,97 @@ import Foundation
 import UIKit
 import Combine
 
-// Both this and the DiffableCollectionViewManager are exactly the same except one is a view controller, and the other is not.
-public class DiffableCollectionViewController<SectionType: Hashable,
-                                       ItemType: Hashable,
-                                       DataSource: CollectionViewDataSource<SectionType, ItemType>>:
+class DiffableCollectionViewController<SectionType: Hashable,
+                                       ConfigurationType: Hashable,
+                                       DataSource: CollectionViewDataSource<SectionType, ConfigurationType>>:
                                         UIViewController, UICollectionViewDelegate {
     
     public lazy var dataSource = DataSource(collectionView: self.collectionView)
 
-    @Published public var selectedItems: [ItemType] = []
+    @Published var selectedItems: [ConfigurationType] = []
 
-    // This private getter ensures we use the internal selected items value, map it to our ItemType, and support multi/single selection
-    private var __selectedItems: [ItemType] {
+    private var selectionImapact = UIImpactFeedbackGenerator(style: .light)
+
+    private var __selectedItems: [ConfigurationType] {
         return self.collectionView.indexPathsForSelectedItems?.compactMap({ ip in
             return self.dataSource.itemIdentifier(for: ip)
         }) ?? []
     }
+        
+    var cancellables = Set<AnyCancellable>()
 
-    public let collectionView: UICollectionView
+    let collectionView: UICollectionView
 
-    public init(with collectionView: UICollectionView) {
+    init(with collectionView: UICollectionView) {
         self.collectionView = collectionView
-        super.init()
+        super.init(nibName: nil, bundle: nil)
         self.initializeViews()
     }
 
     required init?(coder aDecoder: NSCoder) {
-        self.collectionView = UICollectionView()
-        super.init(coder: aDecoder)
-        self.initializeViews()
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    deinit {
+        self.cancellables.forEach { cancellable in
+            cancellable.cancel()
+        }
     }
 
-    public func initializeViews() {
+    func initializeViews() {
         self.view.addSubview(self.collectionView)
         self.collectionView.delegate = self
+        
+        self.dataSource.didApplyChanges = { [unowned self] in
+            self.didApplyChanges()
+        }
+        
+        self.dataSource.didApplySnapshot = { [unowned self] in
+            self.didApplySnapshot()
+        }
+    }
+    
+    func didApplyChanges() {}
+    func didApplySnapshot() {}
+    
+    func loadInitialData() {
+        Task {
+            await self.loadData()
+        }
     }
 
-    public func collectionViewDataWasLoaded() {}
+    func collectionViewDataWasLoaded() {}
 
-    public override func viewDidLayoutSubviews() {
+    override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
 
         self.layoutCollectionView(self.collectionView)
     }
 
     /// Subclasses should override this function if they don't want the collection view to be full screen.
-    public func layoutCollectionView(_ collectionView: UICollectionView) {
-        self.collectionView.frame = self.view.bounds
+    func layoutCollectionView(_ collectionView: UICollectionView) {
+        self.collectionView.frame = CGRect(x: 0, y: 0, width: self.view.frame.width, height: self.view.frame.height)
     }
 
     @MainActor
-    public func loadData() async {
-        // Forces layoutCollectionView(_ collectionView: UICollectionView) to be called.
-        // Weird stuff/crashes can happen if the data sources collection view has a zero frame
-        
+    func loadData() async {
         self.collectionView.setNeedsLayout()
         self.collectionView.layoutIfNeeded()
 
         let dataDictionary = await self.retrieveDataForSnapshot()
 
-        guard !Task.isCancelled else {
-            return
-        }
+        guard !Task.isCancelled else { return }
 
         let snapshot = self.getInitialSnapshot(with: dataDictionary)
 
         await self.dataSource.apply(snapshot)
 
-        guard !Task.isCancelled else {
-            return
-        }
+        guard !Task.isCancelled else { return }
 
         self.collectionViewDataWasLoaded()
     }
 
-    // Using a dictionary here allows for easily appending items to a section while still ensuring order.
-    public func getInitialSnapshot(with dictionary: [SectionType : [ItemType]])
-    -> NSDiffableDataSourceSnapshot<SectionType, ItemType> {
+    func getInitialSnapshot(with dictionary: [SectionType: [ConfigurationType]]) -> NSDiffableDataSourceSnapshot<SectionType, ConfigurationType> {
         
         var snapshot = self.dataSource.snapshot()
         snapshot.deleteAllItems()
@@ -107,42 +121,33 @@ public class DiffableCollectionViewController<SectionType: Hashable,
     /// Used to capture and store any data needed for the snapshot
     /// Dictionary must include all SectionType's in order to be properly displayed
     /// Empty array may be returned for sections that dont have items.
-    public func retrieveDataForSnapshot() async -> [SectionType: [ItemType]] {
+    func retrieveDataForSnapshot() async -> [SectionType: [ConfigurationType]] {
         fatalError("retrieveDataForSnapshot NOT IMPLEMENTED")
     }
 
-    public func getAllSections() -> [SectionType] {
+    func getAllSections() -> [SectionType] {
         fatalError("getAllSections NOT IMPLEMENTED")
     }
 
-    //MARK: CollectionViewDelegate
-    // Note that any delegate methods that need to be overriden, need to be included here or they will not be called in their subclasses
+    // MARK: CollectionViewDelegate
 
-    // Simple way to handle selection
-    public func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        if let cell = collectionView.cellForItem(at: indexPath) as? CollectionViewManagerCell {
-            cell.update(isSelected: true)
-        }
-
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         self.selectedItems = __selectedItems
     }
 
-    public func collectionView(_ collectionView: UICollectionView, didDeselectItemAt indexPath: IndexPath) {
-        if let cell = collectionView.cellForItem(at: indexPath) as? CollectionViewManagerCell {
-            cell.update(isSelected: false)
-        }
-
+    func collectionView(_ collectionView: UICollectionView, didDeselectItemAt indexPath: IndexPath) {
+        self.selectionImapact.impactOccurred()
         self.selectedItems = __selectedItems
     }
 
-    public func collectionView(_ collectionView: UICollectionView,
+    func collectionView(_ collectionView: UICollectionView,
                         contextMenuConfigurationForItemAt indexPath: IndexPath,
                         point: CGPoint) -> UIContextMenuConfiguration? {
         return nil
     }
     
-    public func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {}
+    func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {}
     
-    public func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {}
-    public func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {}
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {}
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {}
 }

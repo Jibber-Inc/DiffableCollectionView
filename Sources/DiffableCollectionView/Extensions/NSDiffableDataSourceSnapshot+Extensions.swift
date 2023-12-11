@@ -9,6 +9,12 @@ import Foundation
 import UIKit
 
 extension NSDiffableDataSourceSnapshot {
+    
+    mutating func resetItemIdentifiers() {
+        self.sectionIdentifiers.forEach { section in
+            self.setItems([], in: section)
+        }
+    }
 
     /// Inserts the given items into the section starting at the given index. If the index is is greater than the number of items in the section,
     /// then the new items are appended to the section.
